@@ -20,41 +20,48 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
+                            SetEnvironmentVariable)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch.conditions import UnlessCondition
 from launch_ros.actions import Node
 
+
 def generate_launch_description():
-    launch_file_dir = os.path.join(get_package_share_directory('hbot_simulation'), 'launch')
     pkg_gazebo_ros = get_package_share_directory('gazebo_ros')
+    pkg_hbot_simulation = get_package_share_directory('hbot_simulation')
+    pkg_hbot_description = get_package_share_directory('hbot_description')
 
-    use_sim_time = LaunchConfiguration('use_sim_time', default='true')
-    x_pose = LaunchConfiguration('x_pose', default='-1.0')
-    y_pose = LaunchConfiguration('y_pose', default='-4.5')
-    headless = LaunchConfiguration('headless', default='false')
+    use_sim_time = LaunchConfiguration('use_sim_time')
+    x_pose = LaunchConfiguration('x_pose')
+    y_pose = LaunchConfiguration('y_pose')
+    headless = LaunchConfiguration('headless')
 
-    world = os.path.join(
-        get_package_share_directory('hbot_simulation'),
-        'worlds',
-        'hbot_house.world'
-    )
+    world = os.path.join(pkg_hbot_simulation, 'worlds', 'hbot_house.world')
 
-    urdf_path = os.path.join(
-        get_package_share_directory('hbot_description'),
-        'urdf',
-        'hbot.urdf'
-    )
-
+    # robot_state_publisher publishes this URDF *and* Gazebo spawns from it (via
+    # -topic below), so the simulated body and the TF tree can never drift apart.
+    urdf_path = os.path.join(pkg_hbot_description, 'urdf', 'hbot.urdf')
     with open(urdf_path, 'r') as infp:
         robot_desc = infp.read()
 
-    sdf_path = os.path.join(
-        get_package_share_directory('hbot_description'),
-        'urdf',
-        'hbot.sdf'
-    )
+    declare_use_sim_time_cmd = DeclareLaunchArgument(
+        'use_sim_time', default_value='true',
+        description='Use the Gazebo /clock as the ROS time source')
+    declare_x_pose_cmd = DeclareLaunchArgument(
+        'x_pose', default_value='-1.0', description='Robot spawn X (m)')
+    declare_y_pose_cmd = DeclareLaunchArgument(
+        'y_pose', default_value='-4.5', description='Robot spawn Y (m)')
+    declare_headless_cmd = DeclareLaunchArgument(
+        'headless', default_value='false',
+        description='Run gzserver only, without the gzclient GUI')
+
+    # Let Gazebo resolve `model://hbot_house` and friends from this package.
+    set_model_path = SetEnvironmentVariable(
+        name='GAZEBO_MODEL_PATH',
+        value=[os.path.join(pkg_hbot_simulation, 'models'), ':',
+               os.environ.get('GAZEBO_MODEL_PATH', '')])
 
     gzserver_cmd = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -71,33 +78,40 @@ def generate_launch_description():
     )
 
     robot_state_publisher_node = Node(
-      package='robot_state_publisher',
-      executable='robot_state_publisher',
-      name='robot_state_publisher',
-      parameters=[{'use_sim_time': use_sim_time,
-          'robot_description': robot_desc}],
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        name='robot_state_publisher',
+        output='screen',
+        parameters=[{'use_sim_time': use_sim_time,
+                     'robot_description': robot_desc}],
     )
 
-    # spawn entity hbot with urdf file
-    spawn_turtlebot_cmd = Node(
-      package='gazebo_ros',
-      executable='spawn_entity.py',
-      arguments=[
-          '-entity', 'hbot',
-          '-file', sdf_path,
-          '-x', x_pose,
-          '-y', y_pose,
-          '-z', '0.01'
-      ],
-      output='screen'
+    # Spawn from the published /robot_description rather than a pre-baked .sdf so
+    # there is a single source of truth (the xacro-generated URDF).
+    spawn_hbot_cmd = Node(
+        package='gazebo_ros',
+        executable='spawn_entity.py',
+        output='screen',
+        arguments=[
+            '-entity', 'hbot',
+            '-topic', 'robot_description',
+            '-x', x_pose,
+            '-y', y_pose,
+            '-z', '0.01',
+        ],
     )
 
     ld = LaunchDescription()
 
-    # Add the commands to the launch description
+    ld.add_action(declare_use_sim_time_cmd)
+    ld.add_action(declare_x_pose_cmd)
+    ld.add_action(declare_y_pose_cmd)
+    ld.add_action(declare_headless_cmd)
+
+    ld.add_action(set_model_path)
     ld.add_action(gzserver_cmd)
     ld.add_action(gzclient_cmd)
     ld.add_action(robot_state_publisher_node)
-    ld.add_action(spawn_turtlebot_cmd)
+    ld.add_action(spawn_hbot_cmd)
 
     return ld
